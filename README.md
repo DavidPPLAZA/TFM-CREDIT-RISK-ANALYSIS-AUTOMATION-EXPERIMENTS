@@ -70,7 +70,7 @@ Balance consolidado y cuenta de pérdidas y ganancias para los ejercicios 2022, 
 
 ---
 
-### Imagen — Grifols, S.A. (exportación visual del Excel)
+### Imagen — Grifols, S.A.
 La misma información del Excel comprimida en un único plano visual. Caso extremo de densidad: balance completo y PyG de tres ejercicios en una sola imagen PNG.
 
 ![Imagen balance Grifols](inputs/imagenes/excel_balance.png)
@@ -101,12 +101,6 @@ Cuentas anuales individuales descargadas directamente de la CNMV. Tablas partida
 
 En los experimentos de este repositorio, Docling es la pieza que transforma imágenes y páginas de PDF en DataFrames tabulares sobre los que el resto del pipeline puede operar de forma determinista.
 
-### Por qué índice posicional y no embeddings
-
-El paso de localización de partidas es el más delicado del pipeline. Se evaluaron distintos enfoques (documentados en detalle en la memoria del TFM):
-
-- **Embeddings** (seis modelos probados, hasta 560M parámetros): fallan sistemáticamente con partidas de nombre similar en secciones distintas del balance y con la estructura acumulativa de la PyG.
-- **LLM con índice posicional**: recibe la lista completa de partidas con su número de fila y razona por proximidad jerárquica para resolver todos los casos ambiguos, incluyendo partidas duplicadas, denominaciones en inglés y ruido OCR. Es el enfoque adoptado en el pipeline final.
 
 ---
 
