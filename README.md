@@ -6,7 +6,7 @@ Este repositorio contiene los **experimentos de extracción de partidas contable
 
 ## Contexto del proyecto
 
-El TFM diseña e implementa un sistema de generación automatizada de informes de seguimiento crediticio bancario, construido íntegramente sobre herramientas de código abierto. El pipeline principal está orquestado en **n8n** (workflow visual low-code desplegado en Docker) y combina lógica determinista en Python con llamadas a LLMs vía API de Groq para sintetizar los distintos bloques del informe.
+El TFM diseña e implementa un sistema de generación automatizada de informes de seguimiento crediticio bancario, construido íntegramente sobre herramientas de código abierto. El pipeline principal está orquestado en **n8n** (workflow visual low-code desplegado en Docker) y combina lógica determinista en Python con llamadas a LLMs vía API de Groq para sintetizar los distintos bloques del informe. Las claves de Groq son gratuitas en [console.groq.com](https://console.groq.com) y se usan tres en rotación para respetar los límites de RPM del plan gratuito (30 RPM por clave) cuando el pipeline hace llamadas consecutivas para varios trozos.
 
 Uno de los bloques centrales del informe es el **análisis económico-financiero**, que calcula 22 ratios agrupados en cinco categorías (solvencia, cobertura, liquidez, rentabilidad y eficiencia operativa) y los compara contra un benchmark sectorial para obtener un scoring crediticio del acreditado. En el pipeline principal este módulo opera sobre un Excel con estructura fija exportado de SABI.
 
@@ -46,13 +46,13 @@ El siguiente diagrama muestra el flujo completo del sistema de generación de in
    │    ├── balance_pyg.xlsx               # Balance + PyG de Grifols (SABI) — input del pipeline Excel
    │    ├── balance descompuesto.xlsx       # Variante multi-hoja
    │    ├── excel transpuesto.xlsx          # Variante con layout horizontal
-   │    └── imagen_excel.png               # Captura del Excel original en Excel
+   │    └── imagen_excel.png               # Captura del Excel original
    ├── imagenes/
-   │    ├── excel_balance.png              # Balance de Grifols comprimido en imagen — input del pipeline imagen
+   │    ├── excel_balance.png              # Balance de Grifols en imagen — input del pipeline imagen
    │    └── excel_pyg.png                  # PyG de Grifols en imagen
    ├── pdf_padado_imagen/
    │    ├── pagina_001.png                 # Página 1 del PDF de Viscofan (activo)
-   │    ├── pagina_002.png                 # Página 2 (pasivo + inicio PyG) — usada en el README
+   │    ├── pagina_002.png                 # Página 2 (pasivo + inicio PyG)
    │    └── pagina_003.png                 # Página 3 (continuación PyG)
    └── workflow n8n completo.png           # Diagrama completo del workflow en n8n
 ```
@@ -88,14 +88,9 @@ Cuentas anuales individuales descargadas directamente de la CNMV. Tablas partida
 
 | Herramienta | Rol en el pipeline |
 |---|---|
-| **Python + pandas** | Lógica de extracción y cálculo de ratios (100% determinista) |
+| **Python** | Lógica de extracción y cálculo de ratios (100% determinista) |
 | **Docling** (IBM) | Extracción estructurada de tablas desde imágenes y PDFs mediante OCR (RapidOCR) y detección de layout |
-| **Groq API** | Inferencia de LLMs en plan gratuito con latencia baja (TPU) |
-| **openai/gpt-oss-120b** | Detección de layout del Excel y selección de partidas por índice posicional |
-| **llama-3.3-70b-versatile** | Selección de partidas en el pipeline Excel |
-| **meta/llama-4-scout-17b** | Extracción de fechas desde cabecera de imagen (LLM multimodal) |
-| **python-dotenv** | Gestión de credenciales sin hardcodeo |
-| **rapidfuzz** | Fuzzy matching explorado como alternativa (descartado — ver `pdf_pipeline.ipynb`) |
+| **Groq API** | Inferencia de LLMs en plan gratuito con latencia baja (TPU): `openai/gpt-oss-120b`, `llama-3.3-70b-versatile` y `meta/llama-4-scout-17b` |
 
 ### Sobre Docling
 
@@ -106,71 +101,46 @@ Cuentas anuales individuales descargadas directamente de la CNMV. Tablas partida
 
 En los experimentos de este repositorio, Docling es la pieza que transforma imágenes y páginas de PDF en DataFrames tabulares sobre los que el resto del pipeline puede operar de forma determinista.
 
----
+### Por qué índice posicional y no embeddings
 
-## Enfoque de extracción
+El paso de localización de partidas es el más delicado del pipeline. Se evaluaron distintos enfoques (documentados en detalle en la memoria del TFM):
 
-El pipeline sigue el mismo esquema de 5 pasos para los tres formatos de entrada, con una fase de preprocesado específica para imagen y PDF:
-
-```
-Input (Excel / Imagen / PDF)
-        │
-        ├─ [Solo imagen/PDF] Preprocesado visual
-        │    ├─ Imagen:  recorte en N trozos con overlap 5%  → Docling
-        │    └─ PDF:     conversión página a PNG             → Docling
-        │
-        ├─ Paso 1: Detección de layout          ← LLM (muestra serializada)
-        │           ¿Cómo está organizado el fichero?
-        │           Columnas de conceptos, columnas de valores, períodos.
-        │
-        ├─ Paso 2: DataFrame de conceptos       ← Python determinista
-        │           Extracción de todas las partidas con sus valores por período.
-        │
-        ├─ Paso 3: Selección de 22 partidas     ← LLM (índice posicional completo)
-        │           ¿Cuál de todas las partidas es "patrimonio_neto"?
-        │           ¿Cuál es "deudas con entidades de crédito a LP" vs "a CP"?
-        │
-        ├─ Paso 4: Extracción de valores        ← Python determinista
-        │           Lookup posicional en el DataFrame.
-        │
-        └─ Paso 5: Cálculo de 22 ratios         ← Python determinista
-```
-
-**Principio de diseño:** el LLM interviene únicamente en los dos pasos que requieren razonamiento sobre estructura y nomenclatura (layout y selección de partidas). Todo lo que puede calcularse de forma exacta se calcula con Python. Esto garantiza que los valores numéricos que alimentan el scoring sean siempre deterministas y trazables.
-
-### Por qué índice posicional y no embeddings ni fuzzy matching
-
-El paso de selección de partidas es el más delicado del pipeline. Se evaluaron tres enfoques (documentados en detalle en `experimentos_recortes.ipynb` y en la memoria del TFM):
-
-- **Embeddings** (six modelos probados, hasta 560M parámetros): fallan sistemáticamente con partidas de nombre similar en secciones distintas del balance y con la estructura acumulativa de la PyG.
-- **Fuzzy matching** (rapidfuzz, ensemble WRatio + token_sort + partial): resuelve la mayoría de casos pero no puede distinguir partidas con nombre idéntico en secciones distintas (ej: "Deudas con entidades de crédito" aparece igual en LP y CP).
-- **LLM con índice posicional**: recibe la lista completa de partidas con su número de fila y puede razonar por proximidad jerárquica para resolver todos los casos ambiguos, incluyendo partidas duplicadas, denominaciones en inglés y ruido OCR. Es el enfoque adoptado en el pipeline final.
+- **Embeddings** (seis modelos probados, hasta 560M parámetros): fallan sistemáticamente con partidas de nombre similar en secciones distintas del balance y con la estructura acumulativa de la PyG.
+- **LLM con índice posicional**: recibe la lista completa de partidas con su número de fila y razona por proximidad jerárquica para resolver todos los casos ambiguos, incluyendo partidas duplicadas, denominaciones en inglés y ruido OCR. Es el enfoque adoptado en el pipeline final.
 
 ---
 
 ## Notebooks
 
-### [`excel_pipeline.ipynb`](notebooks/excel_pipeline.ipynb)
+### [`excel_pipeline.ipynb`](excel_pipeline.ipynb)
 Pipeline completo para ficheros Excel con estados financieros en cualquier formato: vertical, horizontal, multi-hoja, con celdas combinadas, en español o inglés. Empresa de prueba: **Grifols, S.A.** (3 ejercicios, exportación SABI).
 
-### [`imagen_pipeline.ipynb`](notebooks/imagen_pipeline.ipynb)
-Pipeline para imágenes PNG/JPEG. Incluye la estrategia de segmentación con overlap y la variante de detección de layout en llamada LLM unificada (reducción del 74% en tokens respecto a llamadas individuales por trozo). Empresa de prueba: **Grifols, S.A.**
+![Diagrama pipeline Excel](inputs/diagrama_excel_pipeline.png)
 
-### [`pdf_pipeline.ipynb`](notebooks/pdf_pipeline.ipynb)
-Pipeline para PDFs de cuentas anuales. Documenta el enfoque descartado (Docling nativo sobre PDF) y el adoptado (conversión página a imagen). Incluye la corrección de signo en la amortización necesaria cuando la PyG viene con notación contable de gasto negativo. Empresa de prueba: **Viscofan, S.A.** (cuentas CNMV 2024).
+---
 
-### [`experimentos_recortes.ipynb`](notebooks/experimentos_recortes.ipynb)
+### [`imagen_pipeline.ipynb`](imagen_pipeline.ipynb)
+Pipeline para imágenes PNG/JPEG con segmentación en trozos y extracción estructurada con Docling. Empresa de prueba: **Grifols, S.A.**
+
+![Diagrama pipeline imagen](inputs/diagrama_imagen_pipeline.png)
+
+---
+
+### [`pdf_pipeline.ipynb`](pdf_pipeline.ipynb)
+Pipeline para PDFs de cuentas anuales. Documenta el enfoque descartado (Docling nativo sobre PDF) y el adoptado (conversión página a imagen). Empresa de prueba: **Viscofan, S.A.** (cuentas CNMV 2024).
+
+![Diagrama pipeline PDF](inputs/diagrama_pdf_pipeline.png)
+
+---
+
+### [`experimentos de efectos de recortes en la...ipynb`](experimentos%20de%20efectos%20de%20recortes%20en%20la....ipynb)
 Experimento comparativo que justifica la estrategia de segmentación de imágenes. Evalúa Docling con 0, 2, 3 y 4 recortes horizontales frente a visión directa con `llama-4-scout-17b` bajo las mismas configuraciones. Resultado: Docling mejora progresivamente con más recortes; visión directa empeora y colapsa a partir de 2 recortes por truncado del JSON de salida.
 
 ---
 
 ## Resultados
 
-Lectura de todos los tipos de inputs y cálculo de los ratios financieros.
-
----
-
-> Las claves son gratuitas en [console.groq.com](https://console.groq.com). Se usan tres en rotación para respetar los límites RPM del plan gratuito (30 RPM por clave) cuando el pipeline hace llamadas consecutivas para varios trozos.
+El pipeline produce el **cálculo correcto de los 22 ratios financieros sea cual sea el formato del input**, demostrando que la estrategia de extracción es agnóstica al formato de entrada.
 
 ---
 
